@@ -9,53 +9,51 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.mlab as mlab
-import corner
+#import corner
 import example_functions as ef
+import adaptive_jumping_algorithms as aja
 
-from pymc3.stats import autocorr
-# start by defining likelihood function - lf
+#from pymc3.stats import autocorr
 
-"""
-functions to try:
-    
-circle:
-    x = alpha[0]
-    y = alpha[1]
-    r2 = x**2+y**2
-    if (r2 <= 1):
-        r2 = r2
-    else:
-        r2 = 0
-    return r2 
-    
-two gaussians:
-    x = alpha[0]
-    y = alpha[1]
-    g1 = mlab.bivariate_normal(x, y, 1.0, 1.0, -1, -1, -0.8)
-    g2 = mlab.bivariate_normal(x, y, 1.5, 0.8, 1, 2, 0.6)
-    return 0.6*g1+28.4*g2/(0.6+28.4)
-    
 
-    
-"""
-data = ef.sinesignal(1.7,5.62,1.0,10.0,0.01,0.0,1.0, True)
+
+time = np.arange(0,10.0,0.01)
+data = ef.sinesignal(1.7,5.62,3.14,10.0,0.01,0.0,1.0, True)
+signal = ef.sinesignal(1.7,5.62,1.0)
 
 likelihood = ef.sinelikelihood
 prior = ef.sineprior
-
+"""
+0 = MH
+1 = AP   (computationally intesive)
+2 = AM
+"""
+jumptype = 2
 #parameters to estimate
-parameters = [np.array([1.0, 5.0, 1.0])]    # A , f , phi
+parameters = [np.array([1.0, 5.0, 0.0])]    # A , f , phi
  #trace
 trace = [likelihood(parameters[0], data)]
 Ps = [np.array([0.0])]
 
 # define stepsize for chain
-stepsize = np.array([5.0, 25.0, 5.0])
+stepsize = np.array([50.0, 50.0, 2*np.pi])
 # count number of accepted values
 accepted = 0.0
 random_accepted = 0.0
 # number of interations
 N = 10000
+#parameters for APjump
+k = 0
+K = 0
+H = 300
+U = 300
+#parameters for AMjump
+t0 = 100
+E = np.array([0.01, 0.1, 0.01])
+initial_stepsize = np.array([50.0, 50.0, 2*np.pi])
+#record all proposed jumps
+jumps = [0]
+
 
 # metropolis-hastings
 for i in range(N):
@@ -65,13 +63,17 @@ for i in range(N):
     old_like = likelihood(old_parameter,data)
     old_prior = prior(old_parameter,data)
     
-    # new parameters to try:
-    #covariance for the normal dist
-    covar = stepsize * np.diag(np.ones(len(old_parameter)))
-    #proposed jump
-    jump = np.random.multivariate_normal([0,0,0], covar, 1)
-    #new parameter
-    new_parameter = old_parameter + jump
+    #choose jump type
+    if jumptype == 0 :
+        #new parameter using Metropolis Hastings
+        new_parameter = aja.MHjump(parameters, stepsize)
+    if jumptype == 1 :
+        # new parameter using AM jump
+        K,new_parameter = aja.APjump(parameters, initial_stepsize,K, H, U, i)
+    if jumptype == 2:
+        #new parameter using AP jump
+        new_parameter = aja.AMjump(parameters, initial_stepsize, t0, E, i)
+            
     # make it a vector
     new_parameter = new_parameter[0,:]
     # evaluate the parameter
@@ -81,33 +83,41 @@ for i in range(N):
     # accept or reject
     P = (new_like + new_prior) - (old_like + old_prior)
     Ps.append(P)
-    if (P > 1):
+    
+    if (P > 0): # 0 for loglikelihood 1 for normal
         parameters.append(new_parameter)
         accepted += 1.0
         
     else:
         j = (np.random.rand())
         lnj = np.log(j)
-        if (lnj < P) :
+        if (i > H) and (lnj < P) :
             parameters.append(new_parameter)
             accepted += 1.0
             random_accepted +=1.0
         else:
             parameters.append(old_parameter)
-                           
-result = parameters#[N/10:]   
+   
+#burn in 50%                         
+result = parameters#[N/2:]
+estimated_parameters = result[-1]
+A = estimated_parameters[0]
+f = estimated_parameters[1]
+phi = estimated_parameters[2]
+estimated_signal = ef.sinesignal(A,f,phi)
 percent = accepted/N
 rand_percent = random_accepted/N
-print ('accepted interations = %.5f, random accepted iterations = %.5f' % (percent, rand_percent))
+print ("accepted interations = '{0}', random accepted iterations = '{1}'" .format(percent, rand_percent))
+print ("A = '{0}', f = '{1}', phi = '{2}'" .format(A, f, phi))
 
 X = np.zeros(len(result)) # A
 Y = np.zeros(len(result)) # f
 Z = np.zeros(len(result)) # phi
 W = np.zeros(len(result))
-for k in range(len(result)-1):
-    X[k] = result[k][0]
-    Y[k] = result[k][1]
-    Z[k] = result[k][2]
+for l in range(len(result)-1):
+    X[l] = result[l][0]
+    Y[l] = result[l][1]
+    Z[l] = result[l][2]
     #W[k] = result[k][3]
 
 
@@ -124,7 +134,21 @@ plt.figure()
 plt.plot(its,Y,'.r')
 plt.figure()
 plt.plot(its,Z,'.b')
-plt.figure()
+#plots for signals
+f, (ax1, ax2, ax3) = plt.subplots(3, sharex=True, sharey=True)
+ax1.plot(time, data, 'b')
+ax1.set_title('Comparison of two signals')
+ax2.plot(time, signal, 'b')
+ax3.plot(time, estimated_signal, 'r')
+# Fine-tune figure; make subplots close to each other and hide x ticks for
+# all but bottom plot.
+f.subplots_adjust(hspace=0)
+plt.setp([a.get_xticklabels() for a in f.axes[:-1]], visible=False)
+"""
+plt.plot(time, signal, 'b')
+plt.plot(time, estimated_signal, 'r')
+"""
+
 """
 #plt.plot(its,V,'.y')
 plt.figure()
